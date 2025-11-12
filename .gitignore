@@ -1,0 +1,8 @@
+# IntelliJ IDEA
+/.idea
+
+# Python virtual environment
+/.venv
+
+# Local testing Dailies Bot configuration
+/dailies.json

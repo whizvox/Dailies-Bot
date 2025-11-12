@@ -1,0 +1,411 @@
+import calendar
+import datetime
+import json
+import pathlib
+import random
+import zoneinfo
+
+import discord
+from discord.ext import tasks
+
+DATE_FORMAT = "%Y/%m/%d"
+REMIND_TIME = datetime.time(hour=21, minute=30, second=0, tzinfo=zoneinfo.ZoneInfo("America/Los_Angeles"))
+VERSION = "0.1"
+
+def add_months(year: int, month: int, delta_months: int) -> tuple[int, int]:
+    new_month = (month - 1 + delta_months) % 12 + 1
+    new_year = year + (month - 1 + delta_months) // 12
+    return new_year, new_month
+
+
+def get_monthday(year: int, month: int, delta: int) -> int:
+    if delta > 0:
+        return delta
+    _, total_month_days = calendar.monthrange(year, month)
+    return total_month_days + delta
+
+class Chore:
+    title: str = ""
+    interval: int | None = None
+    unit: str | None = None
+    weekday: str | None = None
+    monthdays: int = 0
+    date: datetime.date | None = None
+    user: int = 0
+
+    def __repr__(self):
+        return (f"Chore(title={self.title}, interval={self.interval}, unit={self.unit}, weekday={self.weekday}, "
+                f"monthdays={self.monthdays}, date={self.date}, user={self.user})")
+
+    def __str__(self):
+        return self.__repr__()
+
+    def to_json(self) -> dict:
+        return {"title": self.title, "interval": self.interval, "unit": self.unit, "weekday": self.weekday,
+                "monthdays": self.monthdays, "date": None if self.date is None else self.date.strftime(DATE_FORMAT), "user": self.user}
+
+    def get_weekday_index(self):
+        if self.weekday == "m":
+            return 0
+        elif self.weekday == "t":
+            return 1
+        elif self.weekday == "w":
+            return 2
+        elif self.weekday == "r":
+            return 3
+        elif self.weekday == "f":
+            return 4
+        elif self.weekday == "s":
+            return 5
+        elif self.weekday == "u":
+            return 6
+        return -1
+
+    def format_interval(self) -> str | None:
+        if self.interval is None or self.unit is None:
+            return None
+        if self.unit == "d":
+            unit = "day"
+        elif self.unit == "w":
+            unit = "week"
+        elif self.unit == "m":
+            unit = "month"
+        else:
+            return None
+        if self.interval == 1:
+            return unit
+        return f"{self.interval} {unit}s"
+
+    def calculate_next_date(self, sched_date: datetime.date=None) -> datetime.date:
+        if self.date is not None:
+            return self.date
+        now = datetime.datetime.now().date()
+        if self.unit == "d":
+            if sched_date is None:
+                return now + datetime.timedelta(days=1)
+            else:
+                diff = now - sched_date
+                return now + datetime.timedelta(days=max(self.interval - diff.days, 1))
+        elif self.unit == "w":
+            weekday = self.get_weekday_index()
+            if weekday == -1:
+                raise Exception("Invalid weekday set: " + self.weekday)
+            curr_weekday = now.weekday()
+            if sched_date is not None:
+                # if previous scheduled date has a different weekday, go backwards until we find the correct weekday
+                if sched_date.weekday() > weekday:
+                    sched_date = sched_date - datetime.timedelta(days=sched_date.weekday() - weekday)
+                elif sched_date.weekday() < weekday:
+                    sched_date = sched_date - datetime.timedelta(days=7 - (weekday - sched_date.weekday()))
+                result = sched_date + datetime.timedelta(days=self.interval * 7)
+                if (result - now).days > 0:
+                    return result
+                # if the new date is today or in the past, fallback to scheduling on the next weekday
+            if curr_weekday < weekday:
+                return now + datetime.timedelta(days=weekday - curr_weekday)
+            else:
+                return now + datetime.timedelta(days=7 + (weekday - curr_weekday))
+        elif self.unit == "m":
+            day = get_monthday(now.year, now.month, self.monthdays)
+            if sched_date is not None:
+                year = sched_date.year
+                month = sched_date.month
+                if sched_date.day < day:
+                    year, month = add_months(year, month, -1)
+                year, month = add_months(year, month, self.interval)
+                day = get_monthday(year, month, self.monthdays)
+                result = datetime.date(year, month, day)
+                if (result - now).days > 0:
+                    return result
+            if now.day < day:
+                return datetime.date(now.year, now.month, day)
+            else:
+                year, month = add_months(now.year, now.month, 1)
+                day = get_monthday(year, month, self.monthdays)
+                return datetime.date(year, month, day)
+        else:
+            raise Exception(f"Invalid units: {self.unit}")
+
+
+def parse_chore_from_json(obj: dict) -> Chore:
+    chore = Chore()
+    chore.title = obj["title"]
+    chore.interval = obj["interval"]
+    chore.unit = obj["unit"]
+    chore.weekday = obj["weekday"]
+    chore.monthdays = obj["monthdays"]
+    if "date" in obj and obj["date"] is not None:
+        chore.date = datetime.datetime.strptime(obj["date"], DATE_FORMAT).date()
+    chore.user = obj["user"]
+    return chore
+
+
+class ChoreParseException(Exception):
+    def __init__(self, message):
+        super().__init__(message)
+        self.message = message
+
+
+def parse_chore_from_line(line: str) -> Chore:
+    print(f"Parsing chore from line: {line}")
+    chore = Chore()
+    args = line.split(" ")
+    chore.title = args[0]
+    n = 1
+    if len(args[0]) > 0 and args[0][0] == '"':
+        chore.title = args[0][1:]
+        end_str = False
+        for word in args[1:]:
+            n += 1
+            if len(word) > 0:
+                if word[-1] == '"':
+                    chore.title += " " + word[:-1]
+                    end_str = True
+                    break
+                else:
+                    chore.title += " " + word
+        if not end_str:
+            raise ChoreParseException("Invalid chore title, must close string with another double-quote (\")")
+    if len(args) < n + 3:
+        raise ChoreParseException("Missing arguments, must specify title, user, and time")
+    user_str = args[n]
+    if len(user_str) < 4 or user_str[:2] != "<@" or user_str[-1] != ">":
+        raise ChoreParseException(f"Invalid user: {user_str}")
+    try:
+        chore.user = int(user_str[2:-1])
+    except:
+        raise ChoreParseException(f"Invalid user ID: {user_str[2:-1]}")
+    if args[n + 1] == "every":
+        duration_str = args[n + 2]
+        if duration_str[-1] in ["d", "w", "m"]:
+            chore.unit = duration_str[-1]
+        else:
+            raise ChoreParseException(f"Invalid duration, must end in `d`, `w`, or `m`: {duration_str}")
+        try:
+            chore.interval = int(duration_str[:-1])
+        except:
+            raise ChoreParseException(f"Invalid duration, must begin with an integer: {duration_str}")
+        if chore.unit != "d" and len(args) < n + 4:
+            if chore.unit == "w":
+                raise ChoreParseException("Must specify weekday (i.e. `monday`, `friday`)")
+            else:
+                raise ChoreParseException("Must specify number of days into month (i.e. `1`, `-3`)")
+        if chore.unit == "w":
+            if args[n + 3].lower() not in ["sunday", "u", "monday", "m", "tuesday", "t", "wednesday", "w", "thursday", "r", "friday", "f", "saturday", "s"]:
+                raise ChoreParseException(f"Invalid weekday: {args[n + 3]}")
+            chore.weekday = args[n + 3].lower()
+            if chore.weekday == "sunday":
+                chore.weekday = "u"
+            elif chore.weekday == "thursday":
+                chore.weekday = "r"
+            elif len(chore.weekday) > 1:
+                chore.weekday = chore.weekday[0]
+        elif chore.unit == "m":
+            try:
+                chore.monthdays = int(args[n + 3])
+                if abs(chore.monthdays) > 20:
+                    raise ChoreParseException(f"Invalid month days, must be within [-20, 20]: {chore.monthdays}")
+            except:
+                raise ChoreParseException(f"Invalid month day, must be an integer: {args[n + 3]}")
+    elif args[n + 1] == "on":
+        valid_formats = ["%Y/%m/%d", "%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"]
+        for date_format in valid_formats:
+            try:
+                chore.date = datetime.datetime.strptime(args[n + 2], date_format).date()
+                diff = chore.date - datetime.datetime.now().date()
+                if diff.days <= 0:
+                    raise ChoreParseException(f"Invalid date, must occur after today: {args[n + 2]}")
+                break
+            except ValueError:
+                pass
+        if chore.date is None:
+            raise ChoreParseException(f"Invalid date, must be in `yyyy/mm/dd` or `mm/dd/yyyy` format: {args[n + 2]}")
+    else:
+        raise ChoreParseException("Invalid argument, must be 'every' or 'on': " + args[n])
+    return chore
+
+
+def random_sequence(length: int=6) -> str:
+    result = ""
+    for i in range(length):
+        result += str(random.randint(0, 9))
+    return result
+
+
+class DailiesState:
+    chores: dict[int, Chore] = {}
+    upcoming_chores: dict[int, datetime.date] = {}
+    last_chore_id = 0
+    discord_token: str = ""
+    discord_remind_channel = 0
+
+    def add_new_chore(self, chore) -> int:
+        while self.last_chore_id in self.chores:
+            self.last_chore_id += 1
+        chore_id = self.last_chore_id
+        self.chores[chore_id] = chore
+        if chore.date is not None:
+            self.upcoming_chores[chore_id] = chore.date
+        else:
+            self.upcoming_chores[chore_id] = chore.calculate_next_date()
+        self.save()
+        return chore_id
+
+    def to_json(self) -> dict:
+        chores: list[dict[str, any]] = []
+        for chore_id, chore in self.chores.items():
+            chores.append({"id": chore_id, "chore": chore.to_json()})
+        upcoming: list[dict[str, str]] = []
+        for chore_id, date in self.upcoming_chores.items():
+            upcoming.append({"id": chore_id, "date": date.strftime(DATE_FORMAT)})
+        return {"chores": chores, "upcoming_chores": upcoming, "last_chore_id": self.last_chore_id,
+                "discord_token": self.discord_token, "discord_remind_channel": self.discord_remind_channel}
+
+    def save(self, file_name="dailies.json"):
+        with open(file_name, "w", encoding="utf-8") as file:
+            json.dump(self.to_json(), file, indent=4)
+
+    def load(self, file_name="dailies.json"):
+        self.chores.clear()
+        self.upcoming_chores.clear()
+        self.last_chore_id = 0
+        path = pathlib.Path(file_name)
+        if path.exists():
+            try:
+                with open(file_name, "r", encoding="utf-8") as file:
+                    obj = json.load(file)
+                    for entry in obj["chores"]:
+                        self.chores[entry["id"]] = parse_chore_from_json(entry["chore"])
+                    for entry in obj["upcoming_chores"]:
+                        self.upcoming_chores[entry["id"]] = datetime.datetime.strptime(entry["date"], DATE_FORMAT).date()
+                    self.last_chore_id = obj["last_chore_id"]
+                    self.discord_token = obj["discord_token"]
+                    self.discord_remind_channel = obj["discord_remind_channel"]
+            except Exception as e:
+                if "." in file_name:
+                    ext_index = file_name.rindex(".")
+                    target = file_name[0:ext_index] + "_" + random_sequence() + file_name[ext_index:]
+                else:
+                    target = file_name + "_" + random_sequence()
+                path.rename(target)
+                self.save(file_name)
+                print(f"ERROR: Could not load state from file. Saved malformed file to `{target}` and using default values.")
+                print(e)
+                print()
+        else:
+            self.save(file_name)
+
+
+class DailiesClient(discord.Client):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dailies = DailiesState()
+        self.dailies.load()
+        print(f"Successfully loaded {len(self.dailies.chores)} total chores")
+
+    async def on_ready(self):
+        print(f"Version {VERSION} of Dailies Bot has been loaded")
+        print(f"Logged in as {self.user}")
+
+    async def setup_hook(self) -> None:
+        self.remind_daily.start()
+
+    @tasks.loop(time=REMIND_TIME)
+    async def remind_daily(self):
+        channel = self.get_channel(self.dailies.discord_remind_channel)
+        assert isinstance(channel, discord.abc.Messageable)
+
+        current_chores: dict[int, list[Chore]] = {}
+
+        update: dict[int, datetime.date] = {}
+        delete: list[int] = []
+        for chore_id, date in self.dailies.upcoming_chores.items():
+            now = datetime.datetime.now().date()
+            if (date - now).days <= 0:
+                chore = self.dailies.chores[chore_id]
+                if chore.user not in current_chores:
+                    current_chores[chore.user] = list()
+                current_chores[chore.user].append(chore)
+                if chore.date is None:
+                    update[chore_id] = chore.calculate_next_date(date)
+                else:
+                    delete.append(chore_id)
+        for chore_id, new_date in update.items():
+            self.dailies.upcoming_chores[chore_id] = new_date
+        for chore_id in delete:
+            del self.dailies.chores[chore_id]
+            del self.dailies.upcoming_chores[chore_id]
+        if len(current_chores) == 0:
+            message = "No chores for today!"
+        else:
+            message = "Here are your duties for today:"
+            for user, user_chores in current_chores.items():
+                message += "\n" + "<@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores))
+        if len(update) > 0 or len(delete) > 0:
+            self.dailies.save()
+            print("Saved updated dailies")
+        await channel.send(message)
+
+
+    async def on_message(self, message: discord.Message):
+        if message.author.id == self.user.id or not message.content.startswith("."):
+            return
+        print(f"Attempting to parse message: {message.content}")
+        args = message.content[1:].split(maxsplit=1)
+        reply = ""
+        if args[0] == "list":
+            if len(self.dailies.chores) == 0:
+                reply = "No chores have been added..."
+            else:
+                reply = "List of all chores:\n" + "\n".join(map(lambda x: str(x), self.dailies.chores.values()))
+        elif args[0] == "upcoming":
+            if len(self.dailies.upcoming_chores) == 0:
+                reply = "No upcoming chores..."
+            else:
+                reply = "List of all upcoming chores:"
+                for chore_id, days_until in self.dailies.upcoming_chores.items():
+                    chore = self.dailies.chores[chore_id]
+                    reply += f"\n{days_until} day(s) until {chore.title} (<@{chore.user}>)"
+        elif args[0] == "add":
+            if len(args) == 1:
+                reply = ("Every *N* days: `.add <title> <user> every <days>d` (ex. `.add \"Do the dishes\" @user every 2d`)\n"
+                         "Every *N* weeks: `.add <title> <user> every <weeks>w <weekday>` (ex. `.add \"Clean bathroom\" @user every 3w sunday`)\n"
+                         "Every *N* months: `.add <title> <user> every <months>m <monthdays>` (ex. `.add \"Pay rent\" @user every 1m -3`)\n"
+                         "On a specific date: `.add <title> <user> on <yyyy/mm/dd>` (ex. `.add \"Sign up for classes\" @user on 2025/06/01`)")
+            else:
+                try:
+                    chore = parse_chore_from_line(args[1])
+                    chore_id = self.dailies.add_new_chore(chore)
+                    reply = f"Successfully added new chore `{chore.title}` for <@{chore.user}> (id: {chore_id})"
+                except ChoreParseException as e:
+                    reply = e.message
+        elif args[0] == "delete":
+            chore_id = None
+            try:
+                chore_id = int(args[1])
+            except ValueError:
+                reply = f"Chore ID not found: `{args[1]}`"
+            if chore_id is not None:
+                if chore_id not in self.dailies.chores:
+                    reply = f"Chore ID not found: {chore_id}"
+                else:
+                    del self.dailies.chores[chore_id]
+                    if chore_id in self.dailies.upcoming_chores:
+                        del self.dailies.upcoming_chores[chore_id]
+                    self.dailies.save()
+                    reply = "Chore has successfully been deleted."
+        await message.reply(reply, allowed_mentions=discord.AllowedMentions(users=False))
+
+
+def run_bot():
+    intents = discord.Intents.default()
+    intents.message_content = True
+    client = DailiesClient(intents=intents)
+    if client.dailies.discord_token == "" or client.dailies.discord_remind_channel == 0:
+        print("Must specify Discord token and channel ID in dailies.json")
+    else:
+        client.run(client.dailies.discord_token)
+
+
+if __name__ == "__main__":
+    run_bot()
