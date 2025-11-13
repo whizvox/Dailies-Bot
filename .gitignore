@@ -5,4 +5,5 @@
 /.venv
 
 # Local testing Dailies Bot configuration
-/dailies.json
+/state.json
+/config.json

@@ -4,13 +4,16 @@ import json
 import pathlib
 import random
 import zoneinfo
+from typing import override
 
 import discord
 from discord.ext import tasks
 
 DATE_FORMAT = "%Y/%m/%d"
-REMIND_TIME = datetime.time(hour=21, minute=30, second=0, tzinfo=zoneinfo.ZoneInfo("America/Los_Angeles"))
-VERSION = "0.1"
+TIME_FORMAT = "%H:%M:%S"
+TIMEZONE_FORMAT = "%z"
+REMIND_TIME = datetime.time(hour=9, minute=0, second=0, tzinfo=zoneinfo.ZoneInfo("America/Los_Angeles"))
+VERSION = "0.1.1-dev"
 
 def add_months(year: int, month: int, delta_months: int) -> tuple[int, int]:
     new_month = (month - 1 + delta_months) % 12 + 1
@@ -232,12 +235,82 @@ def random_sequence(length: int=6) -> str:
     return result
 
 
-class DailiesState:
-    chores: dict[int, Chore] = {}
-    upcoming_chores: dict[int, datetime.date] = {}
-    last_chore_id = 0
+class SerializableFile:
+    def __init__(self, default_file_name: str):
+        self._default_file_name = default_file_name
+
+    def serialize(self) -> dict:
+        raise NotImplementedError()
+
+    def deserialize(self, obj: dict):
+        raise NotImplementedError()
+
+    def save(self, file_name: str | None=None):
+        if file_name is None:
+            file_name = self._default_file_name
+        with open(file_name, "w", encoding="utf-8") as file:
+            obj = self.serialize()
+            json.dump(obj, file, indent=4)
+
+    def load(self, file_name: str | None=None):
+        if file_name is None:
+            file_name = self._default_file_name
+        path = pathlib.Path(file_name)
+        if path.exists():
+            try:
+                with open(file_name, "r", encoding="utf-8") as file:
+                    obj = json.load(file)
+                    self.deserialize(obj)
+            except Exception as e:
+                if "." in file_name:
+                    ext_index = file_name.rindex(".")
+                    target = file_name[0:ext_index] + "_" + random_sequence() + file_name[ext_index:]
+                else:
+                    target = file_name + "_" + random_sequence()
+                path.rename(target)
+                self.save(file_name)
+                print(f"ERROR: Could not load `{file_name}`. Saved malformed file to `{target}` and using default values.")
+                print(e)
+        else:
+            self.save(file_name)
+
+
+class DailiesConfig(SerializableFile):
     discord_token: str = ""
     discord_remind_channel = 0
+    remind_time: datetime.time = datetime.time(hour=9)
+    timezone: datetime.tzinfo | None = None
+
+    def __init__(self):
+        super().__init__("config.json")
+
+    @override
+    def serialize(self) -> dict:
+        return {
+            "discord_token": self.discord_token,
+            "discord_remind_channel": self.discord_remind_channel,
+            "remind_time": self.remind_time.strftime(TIME_FORMAT),
+            "timezone": None if self.timezone is None else datetime.time(tzinfo=self.timezone).strftime(TIMEZONE_FORMAT)
+        }
+
+    @override
+    def deserialize(self, obj: dict):
+        self.discord_token = obj["discord_token"]
+        self.discord_remind_channel = obj["discord_remind_channel"]
+        self.remind_time = datetime.datetime.strptime(obj["remind_time"], TIME_FORMAT).time()
+        if "timezone" in obj and obj["timezone"] is not None:
+            self.timezone = datetime.datetime.strptime(obj["timezone"], TIMEZONE_FORMAT).astimezone().tzinfo
+        else:
+            self.timezone = None
+
+
+class DailiesState(SerializableFile):
+    chores: dict[int, Chore] = {}
+    upcoming_chores: dict[int, datetime.date] = {}
+    last_chore_id: int = 0
+
+    def __init__(self):
+        super().__init__("state.json")
 
     def add_new_chore(self, chore) -> int:
         while self.last_chore_id in self.chores:
@@ -251,57 +324,45 @@ class DailiesState:
         self.save()
         return chore_id
 
-    def to_json(self) -> dict:
-        chores: list[dict[str, any]] = []
+    @override
+    def serialize(self) -> dict:
+        chores: list[dict] = []
         for chore_id, chore in self.chores.items():
             chores.append({"id": chore_id, "chore": chore.to_json()})
-        upcoming: list[dict[str, str]] = []
+        upcoming: list[dict] = []
         for chore_id, date in self.upcoming_chores.items():
             upcoming.append({"id": chore_id, "date": date.strftime(DATE_FORMAT)})
-        return {"chores": chores, "upcoming_chores": upcoming, "last_chore_id": self.last_chore_id,
-                "discord_token": self.discord_token, "discord_remind_channel": self.discord_remind_channel}
+        return {
+            "chores": chores,
+            "upcoming_chores": upcoming,
+            "last_chore_id": self.last_chore_id
+        }
 
-    def save(self, file_name="dailies.json"):
-        with open(file_name, "w", encoding="utf-8") as file:
-            json.dump(self.to_json(), file, indent=4)
-
-    def load(self, file_name="dailies.json"):
+    @override
+    def deserialize(self, obj: dict):
         self.chores.clear()
         self.upcoming_chores.clear()
-        self.last_chore_id = 0
-        path = pathlib.Path(file_name)
-        if path.exists():
-            try:
-                with open(file_name, "r", encoding="utf-8") as file:
-                    obj = json.load(file)
-                    for entry in obj["chores"]:
-                        self.chores[entry["id"]] = parse_chore_from_json(entry["chore"])
-                    for entry in obj["upcoming_chores"]:
-                        self.upcoming_chores[entry["id"]] = datetime.datetime.strptime(entry["date"], DATE_FORMAT).date()
-                    self.last_chore_id = obj["last_chore_id"]
-                    self.discord_token = obj["discord_token"]
-                    self.discord_remind_channel = obj["discord_remind_channel"]
-            except Exception as e:
-                if "." in file_name:
-                    ext_index = file_name.rindex(".")
-                    target = file_name[0:ext_index] + "_" + random_sequence() + file_name[ext_index:]
-                else:
-                    target = file_name + "_" + random_sequence()
-                path.rename(target)
-                self.save(file_name)
-                print(f"ERROR: Could not load state from file. Saved malformed file to `{target}` and using default values.")
-                print(e)
-                print()
-        else:
-            self.save(file_name)
+        for entry in obj["chores"]:
+            self.chores[entry["id"]] = parse_chore_from_json(entry["chore"])
+        for entry in obj["upcoming_chores"]:
+            self.upcoming_chores[entry["id"]] = datetime.datetime.strptime(entry["date"], DATE_FORMAT).date()
+        self.last_chore_id = obj["last_chore_id"]
 
 
 class DailiesClient(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dailies = DailiesState()
-        self.dailies.load()
-        print(f"Successfully loaded {len(self.dailies.chores)} total chores")
+        self.config = DailiesConfig()
+        self.config.load()
+        if self.config.timezone is None:
+            def_tz = datetime.datetime.now().astimezone().tzinfo
+            print(f"Timezone not detected in `timezone` configuration field. Setting it to the system {def_tz}")
+            self.config.timezone = def_tz
+            self.config.save()
+        print("Successfully loaded configuration file")
+        self.state = DailiesState()
+        self.state.load()
+        print(f"Successfully loaded state file and found {len(self.state.chores)} chore(s)")
 
     async def on_ready(self):
         print(f"Version {VERSION} of Dailies Bot has been loaded")
@@ -312,17 +373,17 @@ class DailiesClient(discord.Client):
 
     @tasks.loop(time=REMIND_TIME)
     async def remind_daily(self):
-        channel = self.get_channel(self.dailies.discord_remind_channel)
+        channel = self.get_channel(self.config.discord_remind_channel)
         assert isinstance(channel, discord.abc.Messageable)
 
         current_chores: dict[int, list[Chore]] = {}
 
         update: dict[int, datetime.date] = {}
         delete: list[int] = []
-        for chore_id, date in self.dailies.upcoming_chores.items():
+        for chore_id, date in self.state.upcoming_chores.items():
             now = datetime.datetime.now().date()
             if (date - now).days <= 0:
-                chore = self.dailies.chores[chore_id]
+                chore = self.state.chores[chore_id]
                 if chore.user not in current_chores:
                     current_chores[chore.user] = list()
                 current_chores[chore.user].append(chore)
@@ -331,10 +392,10 @@ class DailiesClient(discord.Client):
                 else:
                     delete.append(chore_id)
         for chore_id, new_date in update.items():
-            self.dailies.upcoming_chores[chore_id] = new_date
+            self.state.upcoming_chores[chore_id] = new_date
         for chore_id in delete:
-            del self.dailies.chores[chore_id]
-            del self.dailies.upcoming_chores[chore_id]
+            del self.state.chores[chore_id]
+            del self.state.upcoming_chores[chore_id]
         if len(current_chores) == 0:
             message = "No chores for today!"
         else:
@@ -342,7 +403,7 @@ class DailiesClient(discord.Client):
             for user, user_chores in current_chores.items():
                 message += "\n" + "<@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores))
         if len(update) > 0 or len(delete) > 0:
-            self.dailies.save()
+            self.state.save()
             print("Saved updated dailies")
         await channel.send(message)
 
@@ -354,17 +415,17 @@ class DailiesClient(discord.Client):
         args = message.content[1:].split(maxsplit=1)
         reply = ""
         if args[0] == "list":
-            if len(self.dailies.chores) == 0:
+            if len(self.state.chores) == 0:
                 reply = "No chores have been added..."
             else:
-                reply = "List of all chores:\n" + "\n".join(map(lambda x: str(x), self.dailies.chores.values()))
+                reply = "List of all chores:\n" + "\n".join(map(lambda x: str(x), self.state.chores.values()))
         elif args[0] == "upcoming":
-            if len(self.dailies.upcoming_chores) == 0:
+            if len(self.state.upcoming_chores) == 0:
                 reply = "No upcoming chores..."
             else:
                 reply = "List of all upcoming chores:"
-                for chore_id, days_until in self.dailies.upcoming_chores.items():
-                    chore = self.dailies.chores[chore_id]
+                for chore_id, days_until in self.state.upcoming_chores.items():
+                    chore = self.state.chores[chore_id]
                     reply += f"\n{days_until} day(s) until {chore.title} (<@{chore.user}>)"
         elif args[0] == "add":
             if len(args) == 1:
@@ -375,7 +436,7 @@ class DailiesClient(discord.Client):
             else:
                 try:
                     chore = parse_chore_from_line(args[1])
-                    chore_id = self.dailies.add_new_chore(chore)
+                    chore_id = self.state.add_new_chore(chore)
                     reply = f"Successfully added new chore `{chore.title}` for <@{chore.user}> (id: {chore_id})"
                 except ChoreParseException as e:
                     reply = e.message
@@ -386,13 +447,13 @@ class DailiesClient(discord.Client):
             except ValueError:
                 reply = f"Chore ID not found: `{args[1]}`"
             if chore_id is not None:
-                if chore_id not in self.dailies.chores:
+                if chore_id not in self.state.chores:
                     reply = f"Chore ID not found: {chore_id}"
                 else:
-                    del self.dailies.chores[chore_id]
-                    if chore_id in self.dailies.upcoming_chores:
-                        del self.dailies.upcoming_chores[chore_id]
-                    self.dailies.save()
+                    del self.state.chores[chore_id]
+                    if chore_id in self.state.upcoming_chores:
+                        del self.state.upcoming_chores[chore_id]
+                    self.state.save()
                     reply = "Chore has successfully been deleted."
         await message.reply(reply, allowed_mentions=discord.AllowedMentions(users=False))
 
@@ -401,10 +462,10 @@ def run_bot():
     intents = discord.Intents.default()
     intents.message_content = True
     client = DailiesClient(intents=intents)
-    if client.dailies.discord_token == "" or client.dailies.discord_remind_channel == 0:
-        print("Must specify Discord token and channel ID in dailies.json")
+    if client.config.discord_token == "" or client.config.discord_remind_channel == 0:
+        print("Must specify Discord token and channel ID in `config.json`")
     else:
-        client.run(client.dailies.discord_token)
+        client.run(client.config.discord_token)
 
 
 if __name__ == "__main__":
