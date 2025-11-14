@@ -298,8 +298,9 @@ class DailiesClient(discord.Client):
                 f"* `{p}delay`: Delay an upcoming chore\n"
                 f"* `{p}delete`: Delete a chore\n"
                 f"* `{p}config`: Configure this bot\n"
-                f"* `{p}help`: Show this message\n"
-                f"* `{p}ping`: Test if this bot is responding\n")
+                f"* `{p}ping`: Test if this bot is responding\n"
+                f"* `{p}version`: Show version information\n"
+                f"* `{p}help`: Show this message\n")
         elif args[0] == "config":
             p = self.config.command_prefix
             usage = ("Allows setting and viewing of configuration values for the bot.\n"
@@ -362,6 +363,8 @@ class DailiesClient(discord.Client):
                         reply = f"Invalid configuration field. Must be `channel`, `time`, or `prefix`: {args[3]}"
                 else:
                     reply = usage
+        elif args[0] == "version":
+            reply = f"Running version `{VERSION}` of Dailies Bot"
         else:
             # unknown command, ignore.
             return
