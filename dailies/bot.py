@@ -281,6 +281,22 @@ class DailiesClient(discord.Client):
                             self.state.save()
                             LOGGER.info(f"Updated reminder for upcoming chore to occur at {new_remind_date}: [{chore_id}] {chore}")
                             reply = f"Reminder for chore will now occur at {new_remind_date}: {chore.format_message()}"
+        elif args[0] == "ping":
+            reply = "Pong!"
+        elif args[0] == "help" or args[0] == "cmds" or args[0] == "commands" or args[0] == "?":
+            p = self.config.command_prefix
+            reply = (
+                "Commands:\n"
+                f"* `{p}help`: Show this message\n"
+                f"* `{p}ping`: Test if this bot is responding\n"
+                f"* `{p}add`: Add and schedule a new chore\n"
+                f"* `{p}list`: List all chores\n"
+                f"* `{p}upcoming`: List all upcoming chores\n"
+                f"* `{p}delay`: Delay an upcoming chore\n"
+                f"* `{p}delete`: Delete a chore")
+        else:
+            # unknown command, ignore.
+            return
         if reply == "":
             LOGGER.warning(f"Tried replying with an empty message to {message.author}: {message.content}")
         else:
