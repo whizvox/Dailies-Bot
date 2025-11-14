@@ -5,8 +5,8 @@ from typing import override
 import discord
 from discord.ext import tasks
 
-from dailies.chore import Chore, parse_chore_from_json, ChoreParseException
-from dailies.command import parse_chore_from_line
+from dailies.chore import Chore, parse_chore_from_json, ChoreParseException, add_months, get_monthday
+from dailies.command import parse_chore_from_line, parse_duration
 from dailies.logger import LOGGER, ROTATING_FILE_HANDLER
 from dailies.util import TIME_FORMAT, TIMEZONE_FORMAT, DATE_FORMAT, DATETIME_FORMAT, VERSION, SerializableFile
 
@@ -184,7 +184,7 @@ class DailiesClient(discord.Client):
             else:
                 reply = "List of all chores:"
                 for chore_id, chore in self.state.chores.items():
-                    reply += f"\n* [{chore_id}] {chore.format_message()}"
+                    reply += f"\n* [`{chore_id}`] {chore.format_message()}"
         elif args[0] == "upcoming":
             if len(self.state.upcoming_chores) == 0:
                 reply = "No upcoming chores..."
@@ -193,37 +193,98 @@ class DailiesClient(discord.Client):
                 for chore_id, remind_date in self.state.upcoming_chores.items():
                     chore = self.state.chores[chore_id]
                     diff = remind_date - datetime.datetime.now().date()
-                    reply += f"\n{diff.days} day(s) until <@{chore.user}> needs to {chore.title}"
+                    reply += f"\n* [`{chore_id}`] {diff.days} day(s) until <@{chore.user}> needs to {chore.title}"
         elif args[0] == "add":
             if len(args) == 1:
+                p = self.config.command_prefix
                 reply = (
-                    "Every *N* days: `.add <title> <user> every <days>d` (ex. `.add \"Do the dishes\" @user every 2d`)\n"
-                    "Every *N* weeks: `.add <title> <user> every <weeks>w <weekday>` (ex. `.add \"Clean bathroom\" @user every 3w sunday`)\n"
-                    "Every *N* months: `.add <title> <user> every <months>m <monthdays>` (ex. `.add \"Pay rent\" @user every 1m -3`)\n"
-                    "On a specific date: `.add <title> <user> on <yyyy/mm/dd>` (ex. `.add \"Sign up for classes\" @user on 2025/06/01`)")
+                    "Schedules a new chore.\n"
+                    f"Usage #1: `{p}add <title> <user> every <days>d`\n"
+                    f"Usage #2: `{p}add <title> <user> every <weeks>w <weekday>`\n"
+                    f"Usage #3: `{p}add <title> <user> every <months>m <monthdays>`\n"
+                    f"Usage #4: `{p}add <title> <user> on <yyyy/mm/dd>`\n\n"
+                    "Examples:\n"
+                    f"* Schedule a chore every 2 days: `{p}add \"Do the dishes\" @user every 2d`\n"
+                    f"* Schedule a chore every 3 weeks on Sundays: `{p}add \"Clean bathroom\" @user every 3w sunday`\n"
+                    f"* Schedule a chore every month on the 4th-to-last day: `{p}add \"Pay rent\" @user every 1m -3`\n"
+                    f"* Schedule a chore on a specific date: `{p}add \"Sign up for classes\" @user on 2025/06/01`")
             else:
                 try:
                     chore = parse_chore_from_line(args[1:])
                     chore_id = self.state.add_new_chore(chore)
+                    LOGGER.info(f"Added new chore: [{chore_id}] {chore}")
                     reply = f"Successfully added new chore `{chore.title}` for <@{chore.user}> (id: {chore_id})"
                 except ChoreParseException as e:
                     reply = e.message
         elif args[0] == "delete":
+            if len(args) == 1:
+                p = self.config.command_prefix
+                reply = (
+                    "Deletes a chore from both the overall chore list and the upcoming chores list. You can use "
+                    f"`{p}list` to see all chores and their corresponding IDs.\n"
+                    f"Usage: `{p}delete <chore ID>`\n\n"
+                    "Example:\n"
+                    f"* Delete chore with chore ID 7: `{p}delete 17`")
             chore_id = None
             try:
                 chore_id = int(args[1])
             except ValueError:
-                reply = f"Chore ID not found: `{args[1]}`"
+                reply = f"Chore ID not found: {args[1]}"
             if chore_id is not None:
                 if chore_id not in self.state.chores:
                     reply = f"Chore ID not found: {chore_id}"
                 else:
+                    chore = self.state.chores[chore_id]
                     del self.state.chores[chore_id]
                     if chore_id in self.state.upcoming_chores:
                         del self.state.upcoming_chores[chore_id]
                     self.state.save()
+                    LOGGER.info(f"Deleted chore [{chore_id}] {chore}")
                     reply = "Chore has successfully been deleted."
-        await message.reply(reply, allowed_mentions=discord.AllowedMentions(users=False))
+        elif args[0] == "delay":
+            if len(args) < 3:
+                p = self.config.command_prefix
+                reply = (
+                    f"Delays an upcoming chore by a specified amount of time. You can use `{p}upcoming` to see all "
+                    "upcoming chores and their corresponding IDs.\n"
+                    f"Usage: `{p}delay <chore ID> <duration>`\n\n"
+                    "Examples:\n"
+                    f"* Delay chore ID 16 by 2 weeks: `{p}delay 16 2w`\n"
+                    f"* Delay chore ID 23 by 5 days: `{p}delay 23 5d`\n"
+                    f"* Delay chore ID 30 by 1 month: `{p}delay 30 1m`")
+            else:
+                chore_id = None
+                try:
+                    chore_id = int(args[1])
+                except ValueError:
+                    reply = f"Chore ID not found: {args[1]}"
+                if chore_id is not None:
+                    if chore_id not in self.state.upcoming_chores:
+                        reply = f"Chore ID not found: {chore_id}"
+                    else:
+                        remind_date = self.state.upcoming_chores[chore_id]
+                        chore = self.state.chores[chore_id]
+                        n, unit = parse_duration(args[2])
+                        new_remind_date = None
+                        if unit == "d":
+                            new_remind_date = remind_date + datetime.timedelta(days=n)
+                        elif unit == "w":
+                            new_remind_date = remind_date + datetime.timedelta(days=n * 7)
+                        elif unit == "m":
+                            next_year, next_month = add_months(remind_date.year, remind_date.month, n)
+                            day = get_monthday(next_year, next_month, chore.monthdays)
+                            new_remind_date = datetime.date(next_year, next_month, day)
+                        else:
+                            reply = f"Invalid duration: {args[2]}"
+                        if new_remind_date is not None:
+                            self.state.upcoming_chores[chore_id] = new_remind_date
+                            self.state.save()
+                            LOGGER.info(f"Updated reminder for upcoming chore to occur at {new_remind_date}: [{chore_id}] {chore}")
+                            reply = f"Reminder for chore will now occur at {new_remind_date}: {chore.format_message()}"
+        if reply == "":
+            LOGGER.warning(f"Tried replying with an empty message to {message.author}: {message.content}")
+        else:
+            await message.reply(reply, allowed_mentions=discord.AllowedMentions(users=False))
 
 
 def run_bot():

@@ -4,6 +4,17 @@ from dailies.chore import Chore, ChoreParseException
 from dailies.logger import LOGGER
 
 
+def parse_duration(s: str) -> tuple[int, str] | None:
+    if len(s) > 1 and s[-1].lower() in ["d", "w", "m"]:
+        unit = s[-1].lower()
+        try:
+            n = int(s[:-1])
+            return n, unit
+        except:
+            pass
+    return None
+
+
 def parse_chore_from_line(args: list[str]) -> Chore:
     LOGGER.debug(f"Parsing chore from arguments: {' '.join(args)}")
     chore = Chore()
@@ -34,14 +45,11 @@ def parse_chore_from_line(args: list[str]) -> Chore:
         raise ChoreParseException(f"Invalid user ID: {user_str[2:-1]}")
     if args[n + 1] == "every":
         duration_str = args[n + 2]
-        if duration_str[-1] in ["d", "w", "m"]:
-            chore.unit = duration_str[-1]
+        ret = parse_duration(duration_str)
+        if ret is None:
+            raise ChoreParseException(f"Invalid duration, must be formatted as `<int>(d|w|m)` (i.e. `4d`, `2w`, `1m`): {duration_str}")
         else:
-            raise ChoreParseException(f"Invalid duration, must end in `d`, `w`, or `m`: {duration_str}")
-        try:
-            chore.interval = int(duration_str[:-1])
-        except:
-            raise ChoreParseException(f"Invalid duration, must begin with an integer: {duration_str}")
+            chore.interval, chore.unit = ret
         if chore.unit != "d" and len(args) < n + 4:
             if chore.unit == "w":
                 raise ChoreParseException("Must specify weekday (i.e. `monday`, `friday`)")
