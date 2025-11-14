@@ -130,7 +130,7 @@ class DailiesClient(discord.Client):
 
     @tasks.loop(minutes=1)
     async def remind_task(self):
-        now = datetime.datetime.now(tz=self.config.timezone)
+        now = datetime.datetime.now().astimezone()
         if (now - self.next_remind_dt).total_seconds() < 0:
             return
 
@@ -163,7 +163,6 @@ class DailiesClient(discord.Client):
             message = "Here are your dailies:"
             for user, user_chores in current_chores.items():
                 message += "\n" + "<@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores))
-
         rt = self.config.remind_time
         self.next_remind_dt = now.replace(hour=rt.hour, minute=rt.minute, second=rt.second) + datetime.timedelta(days=1)
         self.state.next_remind_date = self.next_remind_dt.date()
