@@ -4,6 +4,7 @@
 # Python virtual environment
 /.venv
 
-# Local testing Dailies Bot configuration
-/state.json
-/config.json
+# Local Dailies Bot testing
+/state*.json
+/config*.json
+/log.txt*

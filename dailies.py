@@ -1,8 +1,12 @@
 import calendar
 import datetime
 import json
+import logging
 import pathlib
 import random
+import sys
+from logging import Formatter
+from logging.handlers import RotatingFileHandler
 from typing import override
 
 import discord
@@ -12,7 +16,8 @@ DATE_FORMAT = "%Y/%m/%d"
 TIME_FORMAT = "%H:%M:%S"
 TIMEZONE_FORMAT = "%z"
 DATETIME_FORMAT = "%Y/%m/%dT%H:%M:%S%z"
-VERSION = "0.1.2-dev"
+VERSION = "0.1.3-dev"
+LOGGER = logging.Logger("dailies-bot", logging.DEBUG)
 
 def add_months(year: int, month: int, delta_months: int) -> tuple[int, int]:
     new_month = (month - 1 + delta_months) % 12 + 1
@@ -149,7 +154,7 @@ class ChoreParseException(Exception):
 
 
 def parse_chore_from_line(line: str) -> Chore:
-    print(f"Parsing chore from line: {line}")
+    LOGGER.debug(f"Parsing chore from line: {line}")
     chore = Chore()
     args = line.split(" ")
     chore.title = args[0]
@@ -268,8 +273,8 @@ class SerializableFile:
                     target = file_name + "_" + random_sequence()
                 path.rename(target)
                 self.save(file_name)
-                print(f"ERROR: Could not load `{file_name}`. Saved malformed file to `{target}` and using default values.")
-                print(e)
+                LOGGER.warning(f"ERROR: Could not load `{file_name}`. Saved malformed file to `{target}` and using default values.")
+                LOGGER.warning(e)
         else:
             self.save(file_name)
 
@@ -361,10 +366,10 @@ class DailiesClient(discord.Client):
         self.config.load()
         if self.config.timezone is None:
             def_tz = datetime.datetime.now().astimezone().tzinfo
-            print(f"Timezone not detected in `timezone` configuration field. Setting it to the system {def_tz}")
+            LOGGER.info(f"Timezone not detected in `timezone` configuration field. Setting it to the system {def_tz}")
             self.config.timezone = def_tz
             self.config.save()
-        print("Successfully loaded configuration file")
+        LOGGER.info("Successfully loaded configuration file")
         self.state = DailiesState()
         self.state.load()
         if self.state.next_remind_date is None:
@@ -376,16 +381,16 @@ class DailiesClient(discord.Client):
             self.next_remind_dt = rdt
             self.state.next_remind_date = self.next_remind_dt.date()
             self.state.save()
-            print(f"Starting first remind timer task at {rdt.strftime(DATETIME_FORMAT)}")
+            LOGGER.info(f"Starting first remind timer task at {rdt.strftime(DATETIME_FORMAT)}")
         else:
             rt = self.config.remind_time
             rd = self.state.next_remind_date
             self.next_remind_dt = datetime.datetime(year=rd.year, month=rd.month, day=rd.day, hour=rt.hour, minute=rt.minute, second=rt.second, tzinfo=self.config.timezone)
-        print(f"Successfully loaded state file and found {len(self.state.chores)} chore(s)")
+        LOGGER.info(f"Successfully loaded state file and found {len(self.state.chores)} chore(s)")
 
     async def on_ready(self):
-        print(f"Version {VERSION} of Dailies Bot has been loaded")
-        print(f"Logged in as {self.user}")
+        LOGGER.info(f"Version {VERSION} of Dailies Bot has been loaded")
+        LOGGER.info(f"Logged in as {self.user}")
         self.remind_task.start()
 
     @tasks.loop(minutes=1)
@@ -394,7 +399,7 @@ class DailiesClient(discord.Client):
         if (now - self.next_remind_dt).total_seconds() < 0:
             return
 
-        print("Initiating reminder task...")
+        LOGGER.info("Initiating reminder task...")
         channel = self.get_channel(self.config.discord_remind_channel)
         assert isinstance(channel, discord.abc.Messageable)
 
@@ -423,22 +428,19 @@ class DailiesClient(discord.Client):
             message = "Here are your dailies:"
             for user, user_chores in current_chores.items():
                 message += "\n" + "<@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores))
-        if len(update) > 0 or len(delete) > 0:
-            self.state.save()
-            print("Saved updated dailies")
 
         rt = self.config.remind_time
         self.next_remind_dt = now.replace(hour=rt.hour, minute=rt.minute, second=rt.second) + datetime.timedelta(days=1)
         self.state.next_remind_date = self.next_remind_dt.date()
         self.state.save()
-        print(f"Saved next reminder to occur on {self.next_remind_dt.strftime(DATETIME_FORMAT)}")
+        LOGGER.info(f"Saved next reminder to occur on {self.next_remind_dt.strftime(DATETIME_FORMAT)}")
         await channel.send(message)
 
 
     async def on_message(self, message: discord.Message):
         if message.author.id == self.user.id or not message.content.startswith("."):
             return
-        print(f"Attempting to parse message: {message.content}")
+        LOGGER.debug(f"Attempting to parse message from {message.author}: {message.content}")
         args = message.content[1:].split(maxsplit=1)
         reply = ""
         if args[0] == "list":
@@ -486,13 +488,22 @@ class DailiesClient(discord.Client):
 
 
 def run_bot():
+    formatter = Formatter("[{asctime}] [{levelname:<8}] {name}: {message}", datefmt="%Y-%m-%d %H:%M:%S", style="{")
+    rot_file_handler = RotatingFileHandler(filename="log.txt", maxBytes=1000000, backupCount=10, encoding="utf-8")
+    rot_file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(formatter)
+    LOGGER.addHandler(rot_file_handler)
+    LOGGER.addHandler(stream_handler)
     intents = discord.Intents.default()
     intents.message_content = True
     client = DailiesClient(intents=intents)
     if client.config.discord_token == "" or client.config.discord_remind_channel == 0:
+        LOGGER.error("Shutting down client, must specify Discord token and channel ID in `config.json`")
         print("Must specify Discord token and channel ID in `config.json`")
     else:
-        client.run(client.config.discord_token)
+        LOGGER.info("Running Dailies Bot Discord client...")
+        client.run(client.config.discord_token, log_handler=rot_file_handler, log_level=logging.DEBUG)
 
 
 if __name__ == "__main__":
