@@ -8,7 +8,8 @@ from discord.ext import tasks
 from dailies.chore import Chore, parse_chore_from_json, ChoreParseException, add_months, get_monthday
 from dailies.command import parse_chore_from_line, parse_duration
 from dailies.logger import LOGGER, ROTATING_FILE_HANDLER
-from dailies.util import TIME_FORMAT, TIMEZONE_FORMAT, DATE_FORMAT, DATETIME_FORMAT, VERSION, SerializableFile
+from dailies.util import TIME_FORMAT, TIMEZONE_FORMAT, DATE_FORMAT, DATETIME_FORMAT, VERSION, SerializableFile, \
+    TIME_WITH_TIMEZONE_FORMAT
 
 
 class DailiesConfig(SerializableFile):
@@ -126,10 +127,15 @@ class DailiesClient(discord.Client):
     async def on_ready(self):
         LOGGER.info(f"Version {VERSION} of Dailies Bot has been loaded")
         LOGGER.info(f"Logged in as {self.user}")
+        if self.config.discord_remind_channel == 0:
+            LOGGER.warning("Remind channel is not set. You can do this by either sending `.config set channel #<channel>` in Discord or by filling out the `discord_remind_channel` field in `config.json`.")
         self.remind_task.start()
 
     @tasks.loop(minutes=1)
     async def remind_task(self):
+        if self.config.discord_remind_channel == 0:
+            return
+
         now = datetime.datetime.now().astimezone()
         if (now - self.next_remind_dt).total_seconds() < 0:
             return
@@ -286,13 +292,76 @@ class DailiesClient(discord.Client):
             p = self.config.command_prefix
             reply = (
                 "Commands:\n"
-                f"* `{p}help`: Show this message\n"
-                f"* `{p}ping`: Test if this bot is responding\n"
                 f"* `{p}add`: Add and schedule a new chore\n"
                 f"* `{p}list`: List all chores\n"
                 f"* `{p}upcoming`: List all upcoming chores\n"
                 f"* `{p}delay`: Delay an upcoming chore\n"
-                f"* `{p}delete`: Delete a chore")
+                f"* `{p}delete`: Delete a chore\n"
+                f"* `{p}config`: Configure this bot\n"
+                f"* `{p}help`: Show this message\n"
+                f"* `{p}ping`: Test if this bot is responding\n")
+        elif args[0] == "config":
+            p = self.config.command_prefix
+            usage = ("Allows setting and viewing of configuration values for the bot.\n"
+                     f"Usage #1: `{p}config set <field> <value>`\n"
+                     f"Usage #2: `{p}config get`\n\n"
+                     "Fields:\n"
+                     "* `channel`: The Discord channel where the bot will send reminders. If this is not set, the bot will not send any reminders!\n"
+                     "* `time`: The time in which to send reminders. Format should be in 24-hour time and include the timezone (default is `9:00 <system timezone>`).\n"
+                     "* `prefix`: The command prefix used to invoke commands from this bot (default is `.`).\n\n"
+                     "Examples:\n"
+                     f"* Set the remind channel: `{p}config set channel #reminders`\n"
+                     f"* Set the reminder time to 1pm Eastern Standard Time: `{p}config set time 13:00 EST`\n"
+                     f"* Set the command prefix: `{p}config set prefix !`\n"
+                     f"* View all configuration values: `{p}config get`")
+            if len(args) == 1:
+                reply = usage
+            else:
+                if args[1] == "get":
+                    reply = ("Configuration values:\n"
+                             f"* Reminder channel: <#{self.config.discord_remind_channel}>\n"
+                             f"* Reminder time: {self.config.remind_time.strftime('%H:%M')} {datetime.time(tzinfo=self.config.timezone).strftime('%Z')}")
+                elif args[1] == "set":
+                    if len(args) < 4:
+                        reply = usage
+                    elif args[2] == "channel":
+                        if len(args[3]) > 3 and args[3][:2] == "<#" and args[3][-1] == ">":
+                            try:
+                                channel_id = int(args[3][2:-1])
+                                channel = self.get_channel(channel_id)
+                                if channel is None:
+                                    reply = f"Channel not found: {channel_id}"
+                                elif not isinstance(channel, discord.abc.Messageable):
+                                    reply = f"Not able to send messages in this channel: <#{channel_id}>"
+                                else:
+                                    self.config.discord_remind_channel = channel_id
+                                    self.config.save()
+                                    LOGGER.info(f"Updated configuration field `discord_remind_channel` to `{self.config.discord_remind_channel}`")
+                                    reply = f"Reminder channel successfully set to <#{channel_id}>"
+                            except ValueError:
+                                reply = f"Invalid channel ID: {args[3]}"
+                        else:
+                            reply = f"Invalid channel: {args[3]}"
+                    elif args[2] == "time":
+                        time_str = " ".join(args[3:])
+                        try:
+                            remind_time = datetime.datetime.strptime(time_str, TIME_WITH_TIMEZONE_FORMAT).astimezone()
+                            self.config.remind_time = remind_time.time()
+                            self.config.timezone = remind_time.tzinfo
+                            self.config.save()
+                            LOGGER.info(f"Updated configuration field `remind_time` to `{self.config.remind_time}` and `timezone` to `{self.config.timezone}`")
+                            reply = f"Reminder time successfully set to {remind_time.strftime(TIME_WITH_TIMEZONE_FORMAT)}"
+                        except ValueError:
+                            reply = f"Invalid format. Must be `HH:MM TZ` (i.e. `14:00 GMT`, `9:00 PST`): {time_str}"
+                    elif args[2] == "prefix":
+                        self.config.command_prefix = args[3]
+                        self.config.save()
+                        LOGGER.info(f"Updated configuration field `command_prefix` to `{self.config.command_prefix}`")
+                        reply = f"Command prefix now set to `{self.config.command_prefix}`."
+                    else:
+                        reply = f"Invalid configuration field. Must be `channel`, `time`, or `prefix`: {args[3]}"
+                else:
+                    reply = usage
         else:
             # unknown command, ignore.
             return
@@ -306,8 +375,8 @@ def run_bot():
     intents = discord.Intents.default()
     intents.message_content = True
     client = DailiesClient(intents=intents)
-    if client.config.discord_token == "" or client.config.discord_remind_channel == 0:
-        LOGGER.error("Shutting down client, must specify Discord token and channel ID in `config.json`")
+    if client.config.discord_token == "":
+        LOGGER.error("Shutting down client, must specify Discord token in `config.json`")
     else:
         LOGGER.info("Running Dailies Bot Discord client...")
         client.run(client.config.discord_token, log_handler=ROTATING_FILE_HANDLER, log_level=logging.DEBUG)
