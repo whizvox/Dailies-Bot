@@ -16,7 +16,7 @@ DATE_FORMAT = "%Y/%m/%d"
 TIME_FORMAT = "%H:%M:%S"
 TIMEZONE_FORMAT = "%z"
 DATETIME_FORMAT = "%Y/%m/%dT%H:%M:%S%z"
-VERSION = "0.1.3-dev"
+VERSION = "0.1.4-dev"
 LOGGER = logging.Logger("dailies-bot", logging.DEBUG)
 
 def add_months(year: int, month: int, delta_months: int) -> tuple[int, int]:
@@ -284,6 +284,7 @@ class DailiesConfig(SerializableFile):
     discord_remind_channel = 0
     remind_time: datetime.time = datetime.time(hour=9)
     timezone: datetime.tzinfo | None = None
+    command_prefix: str = "."
 
     def __init__(self):
         super().__init__("config.json")
@@ -294,7 +295,8 @@ class DailiesConfig(SerializableFile):
             "discord_token": self.discord_token,
             "discord_remind_channel": self.discord_remind_channel,
             "remind_time": self.remind_time.strftime(TIME_FORMAT),
-            "timezone": None if self.timezone is None else datetime.time(tzinfo=self.timezone).strftime(TIMEZONE_FORMAT)
+            "timezone": None if self.timezone is None else datetime.time(tzinfo=self.timezone).strftime(TIMEZONE_FORMAT),
+            "command_prefix": self.command_prefix
         }
 
     @override
@@ -306,6 +308,7 @@ class DailiesConfig(SerializableFile):
             self.timezone = datetime.datetime.strptime(obj["timezone"], TIMEZONE_FORMAT).astimezone().tzinfo
         else:
             self.timezone = None
+        self.command_prefix = obj["command_prefix"]
 
 
 class DailiesState(SerializableFile):
@@ -438,10 +441,10 @@ class DailiesClient(discord.Client):
 
 
     async def on_message(self, message: discord.Message):
-        if message.author.id == self.user.id or not message.content.startswith("."):
+        if message.author.id == self.user.id or not message.content.startswith(self.config.command_prefix):
             return
-        LOGGER.debug(f"Attempting to parse message from {message.author}: {message.content}")
-        args = message.content[1:].split(maxsplit=1)
+        LOGGER.debug(f"Attempting to parse message from {message.author}#{message.author.id}: {message.content}")
+        args = message.content[len(self.config.command_prefix):].split(maxsplit=1)
         reply = ""
         if args[0] == "list":
             if len(self.state.chores) == 0:
