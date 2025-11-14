@@ -175,22 +175,25 @@ class DailiesClient(discord.Client):
     async def on_message(self, message: discord.Message):
         if message.author.id == self.user.id or not message.content.startswith(self.config.command_prefix):
             return
-        LOGGER.debug(f"Attempting to parse message from {message.author}#{message.author.id}: {message.content}")
+        LOGGER.debug(f"Attempting to parse message from {message.author}: {message.content}")
         args = message.content[len(self.config.command_prefix):].split()
         reply = ""
         if args[0] == "list":
             if len(self.state.chores) == 0:
                 reply = "No chores have been added..."
             else:
-                reply = "List of all chores:\n" + "\n".join(map(lambda x: str(x), self.state.chores.values()))
+                reply = "List of all chores:"
+                for chore_id, chore in self.state.chores.items():
+                    reply += f"\n* [{chore_id}] {chore.format_message()}"
         elif args[0] == "upcoming":
             if len(self.state.upcoming_chores) == 0:
                 reply = "No upcoming chores..."
             else:
                 reply = "List of all upcoming chores:"
-                for chore_id, days_until in self.state.upcoming_chores.items():
+                for chore_id, remind_date in self.state.upcoming_chores.items():
                     chore = self.state.chores[chore_id]
-                    reply += f"\n{days_until} day(s) until {chore.title} (<@{chore.user}>)"
+                    diff = remind_date - datetime.datetime.now().date()
+                    reply += f"\n{diff.days} day(s) until <@{chore.user}> needs to {chore.title}"
         elif args[0] == "add":
             if len(args) == 1:
                 reply = (
@@ -200,7 +203,7 @@ class DailiesClient(discord.Client):
                     "On a specific date: `.add <title> <user> on <yyyy/mm/dd>` (ex. `.add \"Sign up for classes\" @user on 2025/06/01`)")
             else:
                 try:
-                    chore = parse_chore_from_line(args[1])
+                    chore = parse_chore_from_line(args[1:])
                     chore_id = self.state.add_new_chore(chore)
                     reply = f"Successfully added new chore `{chore.title}` for <@{chore.user}> (id: {chore_id})"
                 except ChoreParseException as e:

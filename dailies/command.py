@@ -4,10 +4,9 @@ from dailies.chore import Chore, ChoreParseException
 from dailies.logger import LOGGER
 
 
-def parse_chore_from_line(line: str) -> Chore:
-    LOGGER.debug(f"Parsing chore from line: {line}")
+def parse_chore_from_line(args: list[str]) -> Chore:
+    LOGGER.debug(f"Parsing chore from arguments: {' '.join(args)}")
     chore = Chore()
-    args = line.split(" ")
     chore.title = args[0]
     n = 1
     if len(args[0]) > 0 and args[0][0] == '"':

@@ -1,7 +1,7 @@
 import calendar
 import datetime
 
-from dailies.util import DATE_FORMAT
+from dailies.util import DATE_FORMAT, format_weekday, format_ordinal_number
 
 
 def add_months(year: int, month: int, delta_months: int) -> tuple[int, int]:
@@ -67,6 +67,25 @@ class Chore:
         if self.interval == 1:
             return unit
         return f"{self.interval} {unit}s"
+
+
+    def format_message(self) -> str:
+        result = f"<@{self.user}>: {self.title} -"
+        if self.date is None:
+            result += " every " + self.format_interval()
+            if self.unit == "w":
+                result += " on " + format_weekday(self.weekday) + "s"
+            elif self.unit == "m":
+                result += " on the "
+                if self.monthdays > 0:
+                    result += format_ordinal_number(self.monthdays)
+                elif self.monthdays < 0:
+                    result += format_ordinal_number(-self.monthdays + 1) + " from last day of the month"
+                else:
+                    result += " last day of the month"
+        else:
+            result += f" on {self.date.strftime(DATE_FORMAT)}"
+        return result
 
     def calculate_next_date(self, sched_date: datetime.date=None) -> datetime.date:
         if self.date is not None:
