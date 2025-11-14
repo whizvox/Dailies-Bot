@@ -3,7 +3,6 @@ import datetime
 import json
 import pathlib
 import random
-import zoneinfo
 from typing import override
 
 import discord
@@ -12,8 +11,8 @@ from discord.ext import tasks
 DATE_FORMAT = "%Y/%m/%d"
 TIME_FORMAT = "%H:%M:%S"
 TIMEZONE_FORMAT = "%z"
-REMIND_TIME = datetime.time(hour=9, minute=0, second=0, tzinfo=zoneinfo.ZoneInfo("America/Los_Angeles"))
-VERSION = "0.1.1-dev"
+DATETIME_FORMAT = "%Y/%m/%dT%H:%M:%S%z"
+VERSION = "0.1.2-dev"
 
 def add_months(year: int, month: int, delta_months: int) -> tuple[int, int]:
     new_month = (month - 1 + delta_months) % 12 + 1
@@ -308,6 +307,7 @@ class DailiesState(SerializableFile):
     chores: dict[int, Chore] = {}
     upcoming_chores: dict[int, datetime.date] = {}
     last_chore_id: int = 0
+    next_remind_date: datetime.date | None = None
 
     def __init__(self):
         super().__init__("state.json")
@@ -335,7 +335,8 @@ class DailiesState(SerializableFile):
         return {
             "chores": chores,
             "upcoming_chores": upcoming,
-            "last_chore_id": self.last_chore_id
+            "last_chore_id": self.last_chore_id,
+            "next_remind_date": None if self.next_remind_date is None else self.next_remind_date.strftime(DATE_FORMAT)
         }
 
     @override
@@ -347,6 +348,10 @@ class DailiesState(SerializableFile):
         for entry in obj["upcoming_chores"]:
             self.upcoming_chores[entry["id"]] = datetime.datetime.strptime(entry["date"], DATE_FORMAT).date()
         self.last_chore_id = obj["last_chore_id"]
+        if "next_remind_date" in obj and obj["next_remind_date"] is not None:
+            self.next_remind_date = datetime.datetime.strptime(obj["next_remind_date"], DATE_FORMAT).date()
+        else:
+            self.next_remind_date = None
 
 
 class DailiesClient(discord.Client):
@@ -362,17 +367,34 @@ class DailiesClient(discord.Client):
         print("Successfully loaded configuration file")
         self.state = DailiesState()
         self.state.load()
+        if self.state.next_remind_date is None:
+            rt = self.config.remind_time
+            now = datetime.datetime.now(tz=self.config.timezone)
+            rdt = now.replace(hour=rt.hour, minute=rt.minute, second=rt.second)
+            if (rdt - now).total_seconds() < 0:
+                rdt = rdt + datetime.timedelta(days=1)
+            self.next_remind_dt = rdt
+            self.state.next_remind_date = self.next_remind_dt.date()
+            self.state.save()
+            print(f"Starting first remind timer task at {rdt.strftime(DATETIME_FORMAT)}")
+        else:
+            rt = self.config.remind_time
+            rd = self.state.next_remind_date
+            self.next_remind_dt = datetime.datetime(year=rd.year, month=rd.month, day=rd.day, hour=rt.hour, minute=rt.minute, second=rt.second, tzinfo=self.config.timezone)
         print(f"Successfully loaded state file and found {len(self.state.chores)} chore(s)")
 
     async def on_ready(self):
         print(f"Version {VERSION} of Dailies Bot has been loaded")
         print(f"Logged in as {self.user}")
+        self.remind_task.start()
 
-    async def setup_hook(self) -> None:
-        self.remind_daily.start()
+    @tasks.loop(minutes=1)
+    async def remind_task(self):
+        now = datetime.datetime.now(tz=self.config.timezone)
+        if (now - self.next_remind_dt).total_seconds() < 0:
+            return
 
-    @tasks.loop(time=REMIND_TIME)
-    async def remind_daily(self):
+        print("Initiating reminder task...")
         channel = self.get_channel(self.config.discord_remind_channel)
         assert isinstance(channel, discord.abc.Messageable)
 
@@ -381,8 +403,7 @@ class DailiesClient(discord.Client):
         update: dict[int, datetime.date] = {}
         delete: list[int] = []
         for chore_id, date in self.state.upcoming_chores.items():
-            now = datetime.datetime.now().date()
-            if (date - now).days <= 0:
+            if (date - now.date()).days <= 0:
                 chore = self.state.chores[chore_id]
                 if chore.user not in current_chores:
                     current_chores[chore.user] = list()
@@ -399,12 +420,18 @@ class DailiesClient(discord.Client):
         if len(current_chores) == 0:
             message = "No chores for today!"
         else:
-            message = "Here are your duties for today:"
+            message = "Here are your dailies:"
             for user, user_chores in current_chores.items():
                 message += "\n" + "<@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores))
         if len(update) > 0 or len(delete) > 0:
             self.state.save()
             print("Saved updated dailies")
+
+        rt = self.config.remind_time
+        self.next_remind_dt = now.replace(hour=rt.hour, minute=rt.minute, second=rt.second) + datetime.timedelta(days=1)
+        self.state.next_remind_date = self.next_remind_dt.date()
+        self.state.save()
+        print(f"Saved next reminder to occur on {self.next_remind_dt.strftime(DATETIME_FORMAT)}")
         await channel.send(message)
 
 
