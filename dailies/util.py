@@ -7,9 +7,8 @@ from dailies.logger import LOGGER
 DATE_FORMAT = "%Y/%m/%d"
 TIME_FORMAT = "%H:%M:%S"
 TIMEZONE_FORMAT = "%z"
-TIME_WITH_TIMEZONE_FORMAT = "%H:%M %Z"
 DATETIME_FORMAT = "%Y/%m/%dT%H:%M:%S%z"
-VERSION = "0.1.10"
+VERSION = "0.1.11"
 
 def random_sequence(length: int=6) -> str:
     result = ""

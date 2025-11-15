@@ -1,5 +1,6 @@
 import datetime
 import logging
+import zoneinfo
 from typing import override
 
 import discord
@@ -8,15 +9,14 @@ from discord.ext import tasks
 from dailies.chore import Chore, parse_chore_from_json, ChoreParseException, add_months, get_monthday
 from dailies.command import parse_chore_from_line, parse_duration
 from dailies.logger import LOGGER, ROTATING_FILE_HANDLER
-from dailies.util import TIME_FORMAT, TIMEZONE_FORMAT, DATE_FORMAT, DATETIME_FORMAT, VERSION, SerializableFile, \
-    TIME_WITH_TIMEZONE_FORMAT
+from dailies.util import TIME_FORMAT, DATE_FORMAT, DATETIME_FORMAT, VERSION, SerializableFile
 
 
 class DailiesConfig(SerializableFile):
     discord_token: str = ""
     discord_remind_channel = 0
     remind_time: datetime.time = datetime.time(hour=9)
-    timezone: datetime.tzinfo | None = None
+    timezone: zoneinfo.ZoneInfo = zoneinfo.ZoneInfo("UTC")
     command_prefix: str = "."
 
     def __init__(self):
@@ -28,7 +28,7 @@ class DailiesConfig(SerializableFile):
             "discord_token": self.discord_token,
             "discord_remind_channel": self.discord_remind_channel,
             "remind_time": self.remind_time.strftime(TIME_FORMAT),
-            "timezone": None if self.timezone is None else datetime.time(tzinfo=self.timezone).strftime(TIMEZONE_FORMAT),
+            "timezone": self.timezone.key,
             "command_prefix": self.command_prefix
         }
 
@@ -37,10 +37,7 @@ class DailiesConfig(SerializableFile):
         self.discord_token = obj["discord_token"]
         self.discord_remind_channel = obj["discord_remind_channel"]
         self.remind_time = datetime.datetime.strptime(obj["remind_time"], TIME_FORMAT).time()
-        if "timezone" in obj and obj["timezone"] is not None:
-            self.timezone = datetime.datetime.strptime(obj["timezone"], TIMEZONE_FORMAT).astimezone().tzinfo
-        else:
-            self.timezone = None
+        self.timezone = zoneinfo.ZoneInfo(obj["timezone"])
         self.command_prefix = obj["command_prefix"]
 
 
@@ -100,18 +97,13 @@ class DailiesClient(discord.Client):
         super().__init__(*args, **kwargs)
         self.config = DailiesConfig()
         self.config.load()
-        if self.config.timezone is None:
-            def_tz = datetime.datetime.now().astimezone().tzinfo
-            LOGGER.info(f"Timezone not detected in `timezone` configuration field. Setting it to the system {def_tz}")
-            self.config.timezone = def_tz
-            self.config.save()
         LOGGER.info("Successfully loaded configuration file")
         self.state = DailiesState()
         self.state.load()
         if self.state.next_remind_date is None:
             rt = self.config.remind_time
-            now = datetime.datetime.now(tz=self.config.timezone)
-            rdt = now.replace(hour=rt.hour, minute=rt.minute, second=rt.second)
+            now = datetime.datetime.now().astimezone()
+            rdt = now.replace(hour=rt.hour, minute=rt.minute, second=rt.second, tzinfo=self.config.timezone)
             if (rdt - now).total_seconds() < 0:
                 rdt = rdt + datetime.timedelta(days=1)
             self.next_remind_dt = rdt
@@ -168,7 +160,7 @@ class DailiesClient(discord.Client):
         else:
             message = "Here are your dailies:"
             for user, user_chores in current_chores.items():
-                message += "\n" + "<@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores))
+                message += "\n* <@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores))
         rt = self.config.remind_time
         self.next_remind_dt = now.replace(hour=rt.hour, minute=rt.minute, second=rt.second) + datetime.timedelta(days=1)
         self.state.next_remind_date = self.next_remind_dt.date()
@@ -195,10 +187,23 @@ class DailiesClient(discord.Client):
                 reply = "No upcoming chores..."
             else:
                 reply = "List of all upcoming chores:"
+                now = datetime.datetime.now().astimezone()
                 for chore_id, remind_date in self.state.upcoming_chores.items():
                     chore = self.state.chores[chore_id]
-                    diff = remind_date - datetime.datetime.now().date()
-                    reply += f"\n* [`{chore_id}`] {diff.days} day(s) until <@{chore.user}> needs to {chore.title}"
+                    remind_dt = datetime.datetime(remind_date.year, remind_date.month, remind_date.day, self.config.remind_time.hour, self.config.remind_time.minute, tzinfo=self.config.timezone)
+                    diff = int((remind_dt - now).total_seconds())
+                    reply += f"\n* [`{chore_id}`] "
+                    if diff < 86400: # seconds in a day
+                        hours = diff // 3600
+                        reply += f"{hours} hour"
+                        if hours != 1:
+                            reply += "s"
+                    else:
+                        days = diff // 86400
+                        reply += f"{days} day"
+                        if days != 1:
+                            reply += "s"
+                    reply += f" until <@{chore.user}> needs to {chore.title}"
         elif args[0] == "add":
             if len(args) == 1:
                 p = self.config.command_prefix
@@ -308,11 +313,13 @@ class DailiesClient(discord.Client):
                      f"Usage #2: `{p}config get`\n\n"
                      "Fields:\n"
                      "* `channel`: The Discord channel where the bot will send reminders. If this is not set, the bot will not send any reminders!\n"
-                     "* `time`: The time in which to send reminders. Format should be in 24-hour time and include the timezone (default is `9:00 <system timezone>`).\n"
+                     "* `time`: The time in which to send reminders. Format should be in 24-hour time (default is `9:00`).\n"
+                     "* `timezone`: The IANA time zone for this bot to use (default is `UTC`)."
                      "* `prefix`: The command prefix used to invoke commands from this bot (default is `.`).\n\n"
                      "Examples:\n"
                      f"* Set the remind channel: `{p}config set channel #reminders`\n"
-                     f"* Set the reminder time to 1pm Eastern Standard Time: `{p}config set time 13:00 EST`\n"
+                     f"* Set the reminder time to 1pm: `{p}config set time 13:00`\n"
+                     f"* Set the timezone to be in Los Angeles: `{p}config set timezone America/Los_Angeles`\n"
                      f"* Set the command prefix: `{p}config set prefix !`\n"
                      f"* View all configuration values: `{p}config get`")
             if len(args) == 1:
@@ -321,7 +328,8 @@ class DailiesClient(discord.Client):
                 if args[1] == "get":
                     reply = ("Configuration values:\n"
                              f"* Reminder channel: <#{self.config.discord_remind_channel}>\n"
-                             f"* Reminder time: {self.config.remind_time.strftime('%H:%M')} {datetime.time(tzinfo=self.config.timezone).strftime('%Z')}")
+                             f"* Reminder time: {self.config.remind_time.strftime('%H:%M')}\n"
+                             f"* Timezone: {self.config.timezone.key}")
                 elif args[1] == "set":
                     if len(args) < 4:
                         reply = usage
@@ -344,16 +352,21 @@ class DailiesClient(discord.Client):
                         else:
                             reply = f"Invalid channel: {args[3]}"
                     elif args[2] == "time":
-                        time_str = " ".join(args[3:])
                         try:
-                            remind_time = datetime.datetime.strptime(time_str, TIME_WITH_TIMEZONE_FORMAT).astimezone()
-                            self.config.remind_time = remind_time.time()
-                            self.config.timezone = remind_time.tzinfo
+                            self.config.remind_time = datetime.datetime.strptime(args[3], '%H:%M').time()
                             self.config.save()
-                            LOGGER.info(f"Updated configuration field `remind_time` to `{self.config.remind_time}` and `timezone` to `{self.config.timezone}`")
-                            reply = f"Reminder time successfully set to {remind_time.strftime(TIME_WITH_TIMEZONE_FORMAT)}"
+                            LOGGER.info(f"Updated configuration field `remind_time` to `{self.config.remind_time}`")
+                            reply = f"Reminder time successfully set to {self.config.remind_time.strftime('%H:%M')}"
                         except ValueError:
-                            reply = f"Invalid format. Must be `HH:MM TZ` (i.e. `14:00 GMT`, `9:00 PST`): {time_str}"
+                            reply = f"Invalid format. Must be `HH:MM` (i.e. `9:00`, `14:00`): {args[3]}"
+                    elif args[2] == "timezone":
+                        try:
+                            self.config.timezone = zoneinfo.ZoneInfo(args[3])
+                            self.config.save()
+                            LOGGER.info(f"Updated configuration field `timezone` to {self.config.timezone.key}")
+                            reply = f"Timezone successfully set to {self.config.timezone.key}"
+                        except zoneinfo.ZoneInfoNotFoundError:
+                            reply = f"Timezone not found. Should be an IANA identifier (i.e. `America/New_York` or `Europe/London`): {args[3]}"
                     elif args[2] == "prefix":
                         self.config.command_prefix = args[3]
                         self.config.save()
