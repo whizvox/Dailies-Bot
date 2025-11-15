@@ -314,7 +314,7 @@ class DailiesClient(discord.Client):
                      "Fields:\n"
                      "* `channel`: The Discord channel where the bot will send reminders. If this is not set, the bot will not send any reminders!\n"
                      "* `time`: The time in which to send reminders. Format should be in 24-hour time (default is `9:00`).\n"
-                     "* `timezone`: The IANA time zone for this bot to use (default is `UTC`)."
+                     "* `timezone`: The IANA time zone for this bot to use (default is `UTC`).\n"
                      "* `prefix`: The command prefix used to invoke commands from this bot (default is `.`).\n\n"
                      "Examples:\n"
                      f"* Set the remind channel: `{p}config set channel #reminders`\n"
