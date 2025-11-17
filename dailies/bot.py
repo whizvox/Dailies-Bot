@@ -93,6 +93,8 @@ class DailiesState(SerializableFile):
 
 
 class DailiesClient(discord.Client):
+    next_remind_dt: datetime.datetime
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.config = DailiesConfig()
@@ -165,7 +167,7 @@ class DailiesClient(discord.Client):
         self.next_remind_dt = now.replace(hour=rt.hour, minute=rt.minute, second=rt.second) + datetime.timedelta(days=1)
         self.state.next_remind_date = self.next_remind_dt.date()
         self.state.save()
-        LOGGER.info(f"Saved next reminder to occur on {self.next_remind_dt.strftime(DATETIME_FORMAT)}")
+        LOGGER.info(f"Saved next reminder to occur on {self.state.next_remind_date}")
         await channel.send(message)
 
 
@@ -354,6 +356,8 @@ class DailiesClient(discord.Client):
                     elif args[2] == "time":
                         try:
                             self.config.remind_time = datetime.datetime.strptime(args[3], '%H:%M').time()
+                            self.next_remind_dt = self.next_remind_dt.replace(hour=self.config.remind_time.hour,
+                                                                              minute=self.config.remind_time.minute)
                             self.config.save()
                             LOGGER.info(f"Updated configuration field `remind_time` to `{self.config.remind_time}`")
                             reply = f"Reminder time successfully set to {self.config.remind_time.strftime('%H:%M')}"
@@ -362,6 +366,7 @@ class DailiesClient(discord.Client):
                     elif args[2] == "timezone":
                         try:
                             self.config.timezone = zoneinfo.ZoneInfo(args[3])
+                            self.next_remind_dt = self.next_remind_dt.replace(tzinfo=self.config.timezone)
                             self.config.save()
                             LOGGER.info(f"Updated configuration field `timezone` to {self.config.timezone.key}")
                             reply = f"Timezone successfully set to {self.config.timezone.key}"
