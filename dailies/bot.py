@@ -164,7 +164,7 @@ class DailiesClient(discord.Client):
             for user, user_chores in current_chores.items():
                 message += "\n* <@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores))
         rt = self.config.remind_time
-        self.next_remind_dt = now.replace(hour=rt.hour, minute=rt.minute, second=rt.second) + datetime.timedelta(days=1)
+        self.next_remind_dt = datetime.datetime(now.year, now.month, now.day, rt.hour, rt.minute, rt.second, tzinfo=self.config.timezone) + datetime.timedelta(days=1)
         self.state.next_remind_date = self.next_remind_dt.date()
         self.state.save()
         LOGGER.info(f"Saved next reminder to occur on {self.state.next_remind_date}")
