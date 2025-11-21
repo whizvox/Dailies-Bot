@@ -157,18 +157,23 @@ class DailiesClient(discord.Client):
         for chore_id in delete:
             del self.state.chores[chore_id]
             del self.state.upcoming_chores[chore_id]
+        reminders = []
         if len(current_chores) == 0:
-            message = "No chores for today!"
+            msgtext = "No chores for today!"
         else:
-            message = "Here are your dailies:"
+            msgtext = "Here are your dailies:"
             for user, user_chores in current_chores.items():
-                message += "\n* <@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores))
+                reminders.append("<@" + str(user) + "> " + ", ".join(map(lambda x: x.title, user_chores)))
         rt = self.config.remind_time
         self.next_remind_dt = datetime.datetime(now.year, now.month, now.day, rt.hour, rt.minute, rt.second, tzinfo=self.config.timezone) + datetime.timedelta(days=1)
         self.state.next_remind_date = self.next_remind_dt.date()
         self.state.save()
         LOGGER.info(f"Saved next reminder to occur on {self.state.next_remind_date}")
-        await channel.send(message)
+        await channel.send(msgtext)
+        if len(reminders) > 0:
+            for reminder in reminders:
+                message = await channel.send(reminder)
+                await message.add_reaction("✅")
 
 
     async def on_message(self, message: discord.Message):
@@ -395,6 +400,7 @@ class DailiesClient(discord.Client):
 def run_bot():
     intents = discord.Intents.default()
     intents.message_content = True
+    intents.reactions = True
     client = DailiesClient(intents=intents)
     if client.config.discord_token == "":
         LOGGER.error("Shutting down client, must specify Discord token in `config.json`")
