@@ -15,6 +15,15 @@ def parse_duration(s: str) -> tuple[int, str] | None:
     return None
 
 
+def parse_user(user_str: str) -> int:
+    if len(user_str) < 4 or user_str[:2] != "<@" or user_str[-1] != ">":
+        raise ChoreParseException(f"Invalid user: {user_str}")
+    try:
+        return int(user_str[2:-1])
+    except ValueError:
+        raise ChoreParseException(f"Invalid user ID: {user_str[2:-1]}")
+
+
 def parse_chore_from_line(args: list[str]) -> Chore:
     LOGGER.debug(f"Parsing chore from arguments: {' '.join(args)}")
     chore = Chore()
@@ -37,12 +46,7 @@ def parse_chore_from_line(args: list[str]) -> Chore:
     if len(args) < n + 3:
         raise ChoreParseException("Missing arguments, must specify title, user, and time")
     user_str = args[n]
-    if len(user_str) < 4 or user_str[:2] != "<@" or user_str[-1] != ">":
-        raise ChoreParseException(f"Invalid user: {user_str}")
-    try:
-        chore.user = int(user_str[2:-1])
-    except:
-        raise ChoreParseException(f"Invalid user ID: {user_str[2:-1]}")
+    chore.user = parse_user(user_str)
     if args[n + 1] == "every":
         duration_str = args[n + 2]
         ret = parse_duration(duration_str)

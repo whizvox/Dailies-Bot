@@ -8,7 +8,7 @@ DATE_FORMAT = "%Y/%m/%d"
 TIME_FORMAT = "%H:%M:%S"
 TIMEZONE_FORMAT = "%z"
 DATETIME_FORMAT = "%Y/%m/%dT%H:%M:%S%z"
-VERSION = "0.1.15"
+VERSION = "0.1.16"
 
 def random_sequence(length: int=6) -> str:
     result = ""

@@ -7,7 +7,7 @@ import discord
 from discord.ext import tasks
 
 from dailies.chore import Chore, parse_chore_from_json, ChoreParseException, add_months, get_monthday
-from dailies.command import parse_chore_from_line, parse_duration
+from dailies.command import parse_chore_from_line, parse_duration, parse_user
 from dailies.logger import LOGGER, ROTATING_FILE_HANDLER
 from dailies.util import TIME_FORMAT, DATE_FORMAT, DATETIME_FORMAT, VERSION, SerializableFile
 
@@ -298,6 +298,33 @@ class DailiesClient(discord.Client):
                             self.state.save()
                             LOGGER.info(f"Updated reminder for upcoming chore to occur at {new_remind_date}: [{chore_id}] {chore}")
                             reply = f"Reminder for chore will now occur at {new_remind_date}: {chore.format_message()}"
+        elif args[0] == "reassign":
+            if len(args) < 3:
+                p = self.config.command_prefix
+                reply = (
+                    "Reassigns a task to someone else. Useful is someone is going on vacation for an extended time."
+                    f"Usage: `{p}reassign <chore ID> <user>`"
+                    "Example:"
+                    f"* Reassign chore with ID 16 to user: `{p}reassign 16 @user`")
+            else:
+                chore_id = None
+                try:
+                    chore_id = int(args[1])
+                except ValueError:
+                    reply = f"Chore ID not found: {args[1]}"
+                if chore_id is not None:
+                    if chore_id not in self.state.chores:
+                        reply = f"Chore ID not found: {args[1]}"
+                    else:
+                        chore = self.state.chores[chore_id]
+                        user_id = parse_user(args[2])
+                        if chore.user == user_id:
+                            reply = "There is nothing to reassign, this user is already assigned to this chore."
+                        else:
+                            chore.user = user_id
+                            self.state.save()
+                            LOGGER.info(f"Reassigned user for chore: [{chore_id}] {chore}")
+                            reply = f"Successfully reassigned {chore.format_message()}"
         elif args[0] == "ping":
             reply = "Pong!"
         elif args[0] == "help" or args[0] == "cmds" or args[0] == "commands" or args[0] == "?":
